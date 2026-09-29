@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Domain Look-alike Finder</title>
+    <!-- Tailwind CSS for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Fast Levenshtein for fuzzy matching -->
+    <script src="https://unpkg.com/fast-levenshtein@3.0.3/levenshtein.js"></script>
+    <!-- TLD.js for proper domain parsing -->
+    <script src="https://unpkg.com/tldjs@3.0.1/dist/tld.js"></script>
+    <style>
+        body { background-color: #0f172a; color: #e2e8f0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #1e293b; border: 1px solid #334155; }
+        .input-field { background-color: #0f172a; border: 1px solid #475569; color: white; }
+        .input-field:focus { border-color: #3b82f6; outline: none; }
+        .btn { background-color: #3b82f6; color: white; transition: background 0.2s; }
+        .btn:hover { background-color: #2563eb; }
+        .result-item { border-bottom: 1px solid #334155; padding: 8px 0; }
+        .badge-homograph { background-color: #ef4444; color: white; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+        .badge-typosquat { background-color: #f59e0b; color: black; font-size: 0.75rem; padding: 2px 6px; border-radius: 4px; margin-left: 8px; }
+        .loading { display: none; }
+    </style>
+</head>
+<body class="p-8 max-w-4xl mx-auto">
+
+    <h1 class="text-3xl font-bold mb-2 text-blue-400">Domain Look-alike Finder</h1>
+    <p class="text-gray-400 mb-6">Enter a domain to find typosquats, visual look-alikes, and homograph attacks.</p>
+
+    <div class="flex gap-4 mb-6">
+        <input type="text" id="domainInput" placeholder="e.g., secure-login-update.com" 
+               class="input-field flex-1 p-3 rounded-lg text-lg" onkeypress="handleEnter(event)">
+        <button onclick="findLookalikes()" class="btn px-6 py-3 rounded-lg font-bold">Find Look-alikes</button>
+    </div>
+
+    <div id="loading" class="loading text-center text-blue-400 mb-4">Analyzing...</div>
+    <div id="results" class="card rounded-lg p-4 min-h-[200px]"></div>
+
+    <script>
+        // Common keyboard neighbors for typosquat generation
+        const keyboardLayout = {
+            's': ['a','d','w','x','z','c'],
+            'e': ['w','r','d','s','4','3','w'],
+            'c': ['v','x','d','x','s','z'],
+            'u': ['y','i','h','j','y'],
+            'r': ['e','t','f','d','5','4'],
+            't': ['r','y','g','f','6','5'],
+            'y': ['u','h','t','g','7','6'],
+            'i': ['u','o','j','k','8','7'],
+            'o': ['i','p','k','l','9','8'],
+            'p': ['o','[','l',';','0','9'],
+            'a': ['s','q','w','z','s'],
+            'd': ['s','e','c','x','f','3','2'],
+            'f': ['d','g','r','v','5','4'],
+            'g': ['f','h','t','b','6','5'],
+            'h': ['g','j','y','n','7','6'],
+            'j': ['h','k','u','n','8','7'],
+            'k': ['j','l','i','m','9','8'],
+            'l': ['k','[','o',';',':','9'],
+            'z': ['a','s','x','c','1'],
+            'x': ['z','c','s','v','2','1'],
+            'v': ['c','b','g','h','4','3'],
+            'b': ['v','n','f','h','6','5'],
+            'n': ['b','m','h','j','7','6'],
+            'm': ['n','k']
+        };
+
+        function handleEnter(e) {
+            if (e.key === 'Enter') findLookalikes();
+        }
+
+        function getTld(domain) {
+            try {
+                // Remove protocol and www
+                let clean = domain.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0];
+                return getPublicSuffix(clean);
+            } catch (e) {
+                return domain.split('.').pop();
+            }
+        }
+
+        function getPublicSuffix(url) {
+            try {
+                const parsed = tldjs.getPublicSuffix(url);
+                return parsed ? parsed : '';
+            } catch (e) {
+                return url.split('.').pop();
+            }
+        }
+
+        function findLookalikes() {
+            const input = document.getElementById('domainInput').value.trim().toLowerCase();
+            const resultsDiv = document.getElementById('results');
+            const loading = document.getElementById('loading');
+            
+            if (!input) return;
+
+            resultsDiv.innerHTML = '';
+            loading.style.display = 'block';
+
+            setTimeout(() => {
+                try {
+                    const tld = getTld(input);
+                    const baseDomain = input.replace(new RegExp(`\\.${tld}$`), '');
+                    
+                    let lookalikes = [];
+
+                    // 1. Generate Typosquats (Keyboard slips)
+                    const typosquatPrefixes = generateTyposquats(baseDomain);
+                    typosquatPrefixes.forEach(prefix => {
+                        lookalikes.push({
+                            domain: `${prefix}.${tld}`,
+                            type: 'Typosquat',
+                            score: 100 - (editDistance(baseDomain, prefix) * 10) // Rough score
+                        });
+                    });
+
+                    // 2. Find similar existing domains (Simulation)
+                    // Since we can't query a live DB without an API key, we simulate by generating
+                    // common variations and marking them. In a real tool, you'd pass these to a Whois API.
+                    
+                    // Add common TLD variations
+                    const commonTlds = ['com', 'net', 'org', 'info', 'co', 'io', 'app', 'dev'];
+                    commonTlds.forEach(t => {
+                        if (t !== tld) {
+                            lookalikes.push({
+                                domain: `${baseDomain}.${t}`,
+                                type: 'TLD Variation',
+                                score: 90
+                            });
+                        }
+                    });
+
+                    // Add hyphenated/undashed versions
+                    lookalikes.push({ domain: `${baseDomain.replace(/-/g, '')}.${tld}`, type: 'Hyphen Variation', score: 95 });
+                    lookalikes.push({ domain: `${baseDomain.replace(/\./g, '-')}.${tld}`, type: 'Dash Variation', score: 90 });
+                    
+                    // Add 'secure-login' specific variations if the input was that
+                    if (baseDomain.includes('secure-login')) {
+                         lookalikes.push({ domain: `secure-login-update-${tld}.com`, type: 'Suffix', score: 80 });
+                         lookalikes.push({ domain: `my${baseDomain}`, type: 'Prefix', score: 85 });
+                    }
+
+                    // 3. Homograph Detection (Visual Look-alikes)
+                    // We check if the input contains non-ASCII characters that look like ASCII
+                    const homographs = detectHomographs(input);
+                    if (homographs.length > 0) {
+                        lookalikes.push({
+                            domain: input,
+                            type: 'Homograph Detected',
+                            score: 100,
+                            notes: homographs
+                        });
+                    }
+
+                    // Sort by score
+                    lookalikes.sort((a, b) => b.score - a.score);
+
+                    // Render
+                    renderResults(lookalikes);
+
+                } catch (err) {
+                    resultsDiv.innerHTML = `<div class="text-red-400 p-4">Error parsing domain: ${err.message}</div>`;
+                } finally {
+                    loading.style.display = 'none';
+                }
+            }, 300); // Small delay for UX
+        }
+
+        function generateTyposquats(baseDomain) {
+            let variations = new Set();
+            variations.add(baseDomain);
+
+            // Simple character swap logic
+            for (let i = 0; i < baseDomain.length; i++) {
+                const char = baseDomain[i];
+                const neighbors = keyboardLayout[char] || [];
+                
+                neighbors.forEach(neighbor => {
+                    const newDomain = baseDomain.substring(0, i) + neighbor + baseDomain.substring(i + 1);
+                    variations.add(newDomain);
+                });
+
+                // Double letter (e.g., secure -> seccure)
+                if (baseDomain[i] !== '.' && baseDomain[i] !== '-') {
+                     variations.add(baseDomain.substring(0, i) + baseDomain[i] + baseDomain[i] + baseDomain.substring(i + 1));
+                }
+                
+                // Remove letter
+                if (baseDomain[i] !== '.' && baseDomain[i] !== '-') {
+                    variations.add(baseDomain.substring(0, i) + baseDomain.substring(i + 1));
+                }
+            }
+
+            return Array.from(variations);
+        }
+
+        function detectHomographs(domain) {
+            const notes = [];
+            for (let i = 0; i < domain.length; i++) {
+                const code = domain.charCodeAt(i);
+                // Check for Cyrillic 'а' (U+0430) vs Latin 'a' (U+0061)
+                // Check for Cyrillic 'о' (U+043E) vs Latin 'o' (U+006F)
+                // Check for Cyrillic 'р' (U+0440) vs Latin 'p' (U+0070)
+                if (code > 1024 && code < 1104) { // Range for Cyrillic
+                    notes.push(`Char at ${i} is likely Cyrillic (${domain[i]})`);
+                }
+            }
+            return notes;
+        }
+
+        function editDistance(s1, s2) {
+            return fastlevenshtein.distance(s1, s2);
+        }
+
+        function renderResults(items) {
+            const resultsDiv = document.getElementById('results');
+            if (items.length === 0) {
+                resultsDiv.innerHTML = '<div class="text-gray-500">No look-alikes found.</div>';
+                return;
+            }
+
+            let html = `<div class="text-sm text-gray-400 mb-2">Found ${items.length} potential look-alikes:</div>`;
+            
+            items.forEach(item => {
+                let badge = '';
+                let noteHtml = '';
+
+                if (item.type === 'Homograph Detected') {
+                    badge = `<span class="badge-homograph">Visual Match</span>`;
+                    noteHtml = `<div class="text-xs text-red-300 mt-1">${item.notes.join(', ')}</div>`;
+                } else if (item.type === 'Typosquat') {
+                    badge = `<span class="badge-typosquat">Typo</span>`;
+                } else {
+                    badge = `<span class="text-xs text-gray-500 border border-gray-600 px-2 rounded">${item.type}</span>`;
+                }
+
+                html += `
+                    <div class="result-item flex justify-between items-center group">
+                        <div>
+                            <span class="font-mono text-lg text-blue-200 group-hover:text-white cursor-pointer" 
+                                  onclick="navigator.clipboard.writeText('${item.domain}');this.style.color='#22c55e';setTimeout(()=>this.style.color='#fff',500)">
+                                ${item.domain}
+                            </span>
+                            ${noteHtml}
+                        </div>
+                        <div class="flex items-center">
+                            ${badge}
+                            <span class="text-xs text-gray-600 ml-2">${item.score}% Similar</span>
+                        </div>
+                    </div>
+                `;
+            });
+
+            resultsDiv.innerHTML = html;
+        }
+    </script>
+</body>
+</html>
